@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# md2pdf — compile a Markdown file to PDF with pandoc + xelatex,
+# using Libertinus Serif / Libertinus Math.
+#
+# Usage:
+#   md2pdf [--open] [--font-size N] input.md [output.pdf] [extra pandoc args...]
+#
+# If output.pdf is omitted, it's derived from the input filename.
+# Any further arguments are passed through to pandoc.
+#
+#   --open            opens the resulting PDF in SumatraPDF on Windows (WSL).
+#   --font-size N     body font size in pt (default 12). Accepts any size,
+#                     including non-integers (e.g. 11.5). Line spacing scales
+#                     with it. Requires the `fontsize` LaTeX package.
+
+set -euo pipefail
+
+HEADER="${MD2PDF_HEADER:-$HOME/.local/share/md2pdf/pandoc-header.tex}"
+MARGIN="${MD2PDF_MARGIN:-2.5cm}"
+SUMATRA="${MD2PDF_SUMATRA:-/mnt/c/Users/yuhan/AppData/Local/SumatraPDF/SumatraPDF.exe}"
+
+open_pdf=0
+font_size=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --open)
+            open_pdf=1
+            shift
+            ;;
+        --font-size)
+            if [[ $# -lt 2 ]]; then
+                echo "md2pdf: --font-size requires a value" >&2
+                exit 2
+            fi
+            font_size="$2"
+            shift 2
+            ;;
+        --font-size=*)
+            font_size="${1#--font-size=}"
+            shift
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+if [[ $# -lt 1 ]]; then
+    echo "usage: md2pdf [--open] [--font-size N] input.md [output.pdf] [extra pandoc args...]" >&2
+    exit 2
+fi
+
+input="$1"; shift
+
+if [[ ! -f "$input" ]]; then
+    echo "md2pdf: input file not found: $input" >&2
+    exit 1
+fi
+
+if [[ ! -f "$HEADER" ]]; then
+    echo "md2pdf: header file not found: $HEADER" >&2
+    exit 1
+fi
+
+if [[ $# -ge 1 && "$1" != -* ]]; then
+    output="$1"; shift
+else
+    output="${input%.*}.pdf"
+fi
+
+extra_header_args=()
+tmp_header=""
+if [[ -n "$font_size" ]]; then
+    if ! [[ "$font_size" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        echo "md2pdf: --font-size must be a positive number (got: $font_size)" >&2
+        exit 2
+    fi
+    tmp_header="$(mktemp --suffix=.tex)"
+    trap 'rm -f "$tmp_header"' EXIT
+    printf '\\usepackage[fontsize=%spt]{fontsize}\n' "$font_size" > "$tmp_header"
+    extra_header_args+=(--include-in-header="$tmp_header")
+fi
+
+pandoc "$input" -o "$output" \
+    --pdf-engine=xelatex \
+    -V geometry:margin="$MARGIN" \
+    --include-in-header="$HEADER" \
+    "${extra_header_args[@]}" \
+    "$@"
+
+if [[ "$open_pdf" -eq 1 ]]; then
+    if [[ ! -x "$SUMATRA" ]]; then
+        echo "md2pdf: SumatraPDF not found at $SUMATRA" >&2
+        echo "md2pdf: set MD2PDF_SUMATRA to override" >&2
+        exit 1
+    fi
+    win_path="$(wslpath -w "$(readlink -f "$output")")"
+    "$SUMATRA" -reuse-instance "$win_path" &
+    disown
+fi
